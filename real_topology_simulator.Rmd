@@ -1,0 +1,288 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This notebook will apply our delay simulator on real network topologies like Abilene, Renater, Geant, Germany17 and Cesnet
+
+```{r}
+
+library(igraph)
+library(markovchain)
+library(glmnet)
+```
+
+
+```{r}
+#Generate the graph
+#The node numbers
+#Abilene
+
+path<-'/Users/sanaaghandi/Downloads/abilene_adjacency.csv'
+adj_df <- read.csv(file = path,sep=';', header = FALSE)
+adj_mat<-as.matrix(adj_df)
+A <- adj_mat
+I<-dim(A)[1]
+g <- graph_from_adjacency_matrix( adj_mat )
+plot(g)
+Source.vec<-1:I
+Destination.vec<-1:I
+# la matrice d'incidence d'un graphe est une matrice qui décrit le graphe en indiquant quels liens arrivent sur quels sommets.
+Incidence.matrix<-array(0,c(length(E(g)),2))
+l=1
+for(i in 1:I){
+  for(j in 1:I){
+    if(A[i,j]==1){
+      Incidence.matrix[l,1]<-i
+      Incidence.matrix[l,2]<-j
+      l=l+1
+    }
+  }
+}
+``` 
+
+```{r}
+R<-array(0,c(length(Source.vec)*length(Destination.vec),2*length(E(g))))
+p<-1
+for(source in Source.vec){
+  z<-get.shortest.paths(g, source)
+  #we get the shortest paths from this source to all destinations
+  for(destination in Destination.vec){     # for each destination 
+    if (destination ==source){ #if same source and destination we  don't add a route
+    p=p+1
+  }
+    else{
+    for(l in 1:(length(z$vpath[[destination]])-1)){  # we get the shortest path from this s to d (z$vpath[[destination]])
+      x<-c() #for each link(we have link numbers) we try to place 1 if its used (on each row of R)
+      for(l1 in 1:dim(Incidence.matrix)[1]){   #
+          x<-c(x,(z$vpath[[destination]][l]==Incidence.matrix[l1,1])*
+            (z$vpath[[destination]][(l+1)]==Incidence.matrix[l1,2]))
+      }
+      R[p,c(1:length(x))[x==1]]<-1
+    }
+    p=p+1
+    }
+    #print(p)
+    }}
+
+
+```
+
+```{r}
+#Generate the traffic load balancing
+set.seed(1)
+Horizon<-1000
+epsilon<-0.01
+tmS1 <- matrix(c(1-epsilon,epsilon,epsilon,1-epsilon),nrow = 2, byrow = TRUE)
+tmD1 <- matrix(c(1-epsilon,epsilon,epsilon,1-epsilon),nrow = 2, byrow = TRUE)
+lambda<-0.1
+n_sources<-length(Source.vec)
+n_dest<-length(Destination.vec)#-1  #we eliminate the path(v,v) (same src and dst)
+nb_src<-n_sources
+nb_dst<-n_dest
+idx_src<-Source.vec
+idx_dst<-Destination.vec
+events<-unique(floor(cumsum(-log(runif(20))/lambda)))
+events<-events[events < Horizon]
+rate<-function(nb_src,idx_src,Horizon,events,l1,l2){
+  #rate c'est le pourentage et rand c'est la prortion normalisée 
+  Rate<-array(0,c(I,Horizon))    #matrice de zéros (I,Horizon)
+  Rand<-array(0,c(I))            #vecteur de zéros (1,I)
+  #créer un vecteur initial Rand et Rate
+  for(i in 1:I){
+      Rand[i]<-rexp(1, rate=l2)}
+  
+  sum<-sum(Rand)
+  for(i in 1:I){
+      Rate[i,1]<-Rand[i]/sum}
+  
+ 
+  for(n in 1:(Horizon)){
+    if (n %in% events)
+      {
+              n.srcchange<-sample(c(1:nb_src))[1]  
+              index_src_change<-sample(idx_src)[1:n.srcchange] 
+              for(i in index_src_change){
+                  Rand[i]<-rexp(1, rate=l1)}
+              for(i in index_src_change){
+                  Rate[i,(n+1)]<-(Rand[i]/sum(Rand[index_src_change]))*(1-sum(Rate[-index_src_change,n]))}
+              for(i in c(1:idx_src)[-index_src_change]){
+                 Rate[i,(n+1)]<- Rate[i,n]}
+                } 
+    else {Rate[,n+1]<-Rate[,n]}}
+  return(Rate)}
+
+rand.1<-function(state,n,l1,l2){
+  if (state[n] > 1) {
+    return(rexp(1, rate=l1) )
+  }
+  else {
+    return(rexp(1, rate=l2) )
+  }}
+#The state function for each source and destination
+state<-function(transmatrix, initstate,Horizon){
+  State<-array(0,c(1,Horizon))
+  State[,1]<-initstate
+  for(n in 2:Horizon){
+      State[,n]<-sample(c(1,2),size=1,prob=transmatrix[State[(n-1)],])
+  }
+  return(State)}
+
+stateS1<-state(tmS1, 2,Horizon)
+stateD1<-state(tmD1, 1,Horizon)
+
+#cette partie calcule la proportion de trafic alloué aux sources et destinations
+rate<-function(state,Horizon,I,l1,l2){
+  Rate<-array(0,c(I,Horizon))    #matrice de zéros (I,Horizon)
+  Rand<-array(0,c(I))            #vecteur de zéros (1,I)
+  for(i in 1:I){
+      Rand[i]<-rand.1(state,1,l1,l2)}
+  sum<-sum(Rand)
+  for(i in 1:I){
+      Rate[i,1]<-Rand[i]/sum}
+  for(n in 1:(Horizon-1)){
+      if (state[n]!=state[n+1]){
+              n.change<-sample(c(1:I))[1]         #nombre de noeuds à changer
+              index<-sample(c(1:I))[1:n.change]    #l'indice de ces noeuds à changer #probleme pour destination 
+              for(i in index){
+                  Rand[i]<-rand.1(state,n+1,l1,l2)}
+              
+              
+              for(i in index){
+                  Rate[i,(n+1)]<-(Rand[i]/sum(Rand[index]))*(1-sum(Rate[-index,n]))}
+              for(i in c(1:I)[-index]){
+                 Rate[i,(n+1)]<- Rate[i,n]}
+      } 
+    else {Rate[,n+1]<-Rate[,n]}}
+  return(Rate)}
+
+jumps<-function(state,Horizon){
+  sauts<-c()
+  for(n in 1:(Horizon-1)){
+  if (state[n]!=state[n+1]){
+    sauts<-append(sauts, n)
+  }}
+  return(sauts)}
+
+#stateD1
+n.change<-3
+RateS<-rate(stateS1,Horizon,n_sources, 1/3,3/4)
+jumpS<-jumps(stateS1,Horizon)
+
+RateD<-rate(stateD1,Horizon,n_dest, 1/3,3/4)
+jumpD<-jumps(stateD1,Horizon)
+
+```
+
+
+```{r}
+#Generating the traffic 
+
+Volume<-function(x)
+   
+{  return(100*(2+sin(x/360))+rnorm(1,0,10)) }
+
+#La matrice de trafic entre chaque Si et Dj dans le temps
+Traffic.matrix<-array(0,c(n_sources,n_dest,Horizon))
+for(n in 1:Horizon){ 
+  for(i in 1:n_sources){
+    for(j in 1:n_dest){
+      if(i==j){Traffic.matrix[i,j,n]<-0}
+      else{
+      Traffic.matrix[i,j,n]<-RateS[i,n]*RateD[j,n]*Volume(n)}
+    }}}
+
+#the traffic matrix written in a vector format
+Traffic.vector<-array(0,c(n_sources*(n_dest)-n_dest,Horizon))
+for(n in 1:Horizon){ 
+        k <- nrow(Traffic.matrix[,,n])
+        Traffic.vector[,n]<-as.vector(Traffic.matrix[,,n][-seq(1,k^2,k+1)]) #we remove traffic from source to itself 
+
+        #Traffic.vector[,n]<-as.vector(Traffic.matrix[,,n])
+
+}
+matplot(t(Traffic.vector),type="l",xlab="Time",ylab="Traffic per source/destination")
+
+```
+
+
+```{r}
+#routing matrix without oneself
+R_noself<-array(0,c(length(Source.vec)*length(Destination.vec)-length(Destination.vec),2*length(E(g))))
+p<-1
+for(source in Source.vec){
+  z<-get.shortest.paths(g, source)
+  #we get the shortest paths from this source to all destinations
+  for(destination in Destination.vec[-source]){     # for each destination 
+    #if (destination ==source){ #if same source and destination we  don't add a route
+    #p=p+1
+  #}
+  #else{
+    for(l in 1:(length(z$vpath[[destination]])-1)){  # we get the shortest path from this s to d (z$vpath[[destination]])
+      x<-c() #for each link(we have link numbers) we try to place 1 if its used (on each row of R)
+      for(l1 in 1:dim(Incidence.matrix)[1]){   #
+          x<-c(x,(z$vpath[[destination]][l]==Incidence.matrix[l1,1])*
+            (z$vpath[[destination]][(l+1)]==Incidence.matrix[l1,2]))
+      }
+      R_noself[p,c(1:length(x))[x==1]]<-1
+    }
+    p=p+1
+    }}#}
+#Calculating the delays per link
+mu=1
+C=300
+delay<-function(mu,C,traffic_per_link){
+  return((1/mu)*1/(1-traffic_per_link/C))
+}
+traffic.per.link<-array(0,c(2*length(E(g)),Horizon))
+delay.per.link<-array(0,c(2*length(E(g)),Horizon))
+
+for(n in 1:Horizon){
+    
+      traffic.per.link[,n]<-t(Traffic.vector[,n])%*%R_noself
+      for(i in 1:length(traffic.per.link[,n])){
+      delay.per.link[i,n]<-delay(mu,C,traffic.per.link[i,n])
+ 
+}
+}
+```
+
+
+```{r}
+library(data.table)
+DR=array(0,c(length(Source.vec)*length(Destination.vec)-length(Destination.vec),2*length(E(g)),Horizon))
+LR=array(0,c(length(Source.vec)*length(Destination.vec)-length(Destination.vec),Horizon))
+for(n in 1:(Horizon)){   
+  #To this end we use the routing matrix in order to keep only the link delays involved in each path, given by DR
+    matrix<-delay.per.link[,n]
+  
+    for(k in 1:(length(Source.vec)*length(Destination.vec)-length(Destination.vec)-1)){ 
+      matrix<-rbind(matrix,delay.per.link[,n])
+    }
+    DR[,,n]<-R_noself*matrix
+}  
+for(n in 1:(Horizon)){
+  for(i in 1:(length(Source.vec)*length(Destination.vec)-length(Destination.vec))){
+    #Then we sum the element of each line in DR in order to get the total delay of the path
+    LR[i,n]<-sum(DR[i,,n])
+  }
+} 
+
+#we plot the delays in a timeseries and vectors format
+#pdf('new_delays1.pdf')
+#dev.new(width=5, height=4)
+matplot(t(LR),type="l",xlab="Time",ylab="Source destination delay")
+#dev.off()
+#les sauts des sources en rouge
+for(n in jumpS){
+abline(v = n,col="red")} 
+#les sauts des destinations en bleu
+for(n in jumpD){
+abline(v = n,col="blue")}
+
+```
+```{r}
+write.csv(LR, "Delays_abilene.csv",row.names=FALSE)
+
+write.csv(sort(append(jumpS,jumpD)), "Jumps_total_abilene.csv",row.names=FALSE)
+```
